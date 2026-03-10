@@ -1,6 +1,8 @@
+import { app } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import type { CoworkConfig, CoworkExecutionMode } from '../coworkStore';
+import type { DingTalkConfig, FeishuConfig, QQConfig, WecomConfig } from '../im/types';
 import { resolveRawApiConfig } from './claudeSettings';
 import type { OpenClawEngineManager } from './openclawEngineManager';
 
@@ -25,6 +27,20 @@ const normalizeModelName = (modelId: string): string => {
   return slashIndex >= 0 ? trimmed.slice(slashIndex + 1) : trimmed;
 };
 
+const readPreinstalledPluginIds = (): string[] => {
+  try {
+    const pkgPath = path.join(app.getAppPath(), 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const plugins = pkg.openclaw?.plugins;
+    if (!Array.isArray(plugins)) return [];
+    return plugins
+      .map((p: { id?: string }) => p.id)
+      .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+  } catch {
+    return [];
+  }
+};
+
 export type OpenClawConfigSyncResult = {
   ok: boolean;
   changed: boolean;
@@ -35,15 +51,27 @@ export type OpenClawConfigSyncResult = {
 type OpenClawConfigSyncDeps = {
   engineManager: OpenClawEngineManager;
   getCoworkConfig: () => CoworkConfig;
+  getDingTalkConfig: () => DingTalkConfig | null;
+  getFeishuConfig: () => FeishuConfig | null;
+  getQQConfig: () => QQConfig | null;
+  getWecomConfig: () => WecomConfig | null;
 };
 
 export class OpenClawConfigSync {
   private readonly engineManager: OpenClawEngineManager;
   private readonly getCoworkConfig: () => CoworkConfig;
+  private readonly getDingTalkConfig: () => DingTalkConfig | null;
+  private readonly getFeishuConfig: () => FeishuConfig | null;
+  private readonly getQQConfig: () => QQConfig | null;
+  private readonly getWecomConfig: () => WecomConfig | null;
 
   constructor(deps: OpenClawConfigSyncDeps) {
     this.engineManager = deps.engineManager;
     this.getCoworkConfig = deps.getCoworkConfig;
+    this.getDingTalkConfig = deps.getDingTalkConfig;
+    this.getFeishuConfig = deps.getFeishuConfig;
+    this.getQQConfig = deps.getQQConfig;
+    this.getWecomConfig = deps.getWecomConfig;
   }
 
   sync(reason: string): OpenClawConfigSyncResult {
@@ -77,9 +105,35 @@ export class OpenClawConfigSync {
 
     const workspaceDir = (coworkConfig.workingDirectory || '').trim();
 
+    const preinstalledPluginIds = readPreinstalledPluginIds();
+
+    const dingTalkConfig = this.getDingTalkConfig();
+    const hasDingTalk = dingTalkConfig?.enabled && dingTalkConfig.clientId;
+    const gatewayToken = hasDingTalk
+      ? this.engineManager.getGatewayConnectionInfo().token || ''
+      : '';
+
+    const feishuConfig = this.getFeishuConfig();
+    const hasFeishu = feishuConfig?.enabled && feishuConfig.appId;
+
+    const qqConfig = this.getQQConfig();
+    const hasQQ = qqConfig?.enabled && qqConfig.appId;
+
+    const wecomConfig = this.getWecomConfig();
+    const hasWecom = wecomConfig?.enabled && wecomConfig.botId;
+
+    const hasAnyChannel = hasDingTalk || hasFeishu || hasQQ || hasWecom;
+
     const managedConfig: Record<string, unknown> = {
       gateway: {
         mode: 'local',
+        ...(hasAnyChannel ? {
+          http: {
+            endpoints: {
+              chatCompletions: { enabled: true },
+            },
+          },
+        } : {}),
       },
       models: {
         mode: 'replace',
@@ -111,6 +165,102 @@ export class OpenClawConfigSync {
           ...(workspaceDir ? { workspace: workspaceDir } : {}),
         },
       },
+      ...(preinstalledPluginIds.length > 0
+        ? {
+            plugins: {
+              entries: {
+                ...Object.fromEntries(
+                  preinstalledPluginIds.map((id) => [id, { enabled: true }]),
+                ),
+                // Disable the built-in feishu plugin when the official one is preinstalled
+                ...(preinstalledPluginIds.includes('feishu-openclaw-plugin')
+                  ? { feishu: { enabled: false } }
+                  : {}),
+              },
+            },
+          }
+        : {}),
+      ...(hasDingTalk ? {
+        channels: {
+          'dingtalk-connector': {
+            enabled: true,
+            clientId: dingTalkConfig.clientId,
+            clientSecret: dingTalkConfig.clientSecret,
+            ...(gatewayToken ? { gatewayToken } : {}),
+          },
+          ...(hasFeishu ? {
+            feishu: {
+              enabled: true,
+              appId: feishuConfig.appId,
+              appSecret: feishuConfig.appSecret,
+              domain: feishuConfig.domain || 'feishu',
+            },
+          } : {}),
+          ...(hasQQ ? {
+            qqbot: {
+              enabled: true,
+              appId: qqConfig.appId,
+              clientSecret: qqConfig.appSecret,
+            },
+          } : {}),
+          ...(hasWecom ? {
+            wecom: {
+              enabled: true,
+              botId: wecomConfig.botId,
+              secret: wecomConfig.secret,
+              dmPolicy: 'open',
+            },
+          } : {}),
+        },
+      } : hasFeishu ? {
+        channels: {
+          feishu: {
+            enabled: true,
+            appId: feishuConfig.appId,
+            appSecret: feishuConfig.appSecret,
+            domain: feishuConfig.domain || 'feishu',
+          },
+          ...(hasQQ ? {
+            qqbot: {
+              enabled: true,
+              appId: qqConfig.appId,
+              clientSecret: qqConfig.appSecret,
+            },
+          } : {}),
+          ...(hasWecom ? {
+            wecom: {
+              enabled: true,
+              botId: wecomConfig.botId,
+              secret: wecomConfig.secret,
+              dmPolicy: 'open',
+            },
+          } : {}),
+        },
+      } : hasQQ ? {
+        channels: {
+          qqbot: {
+            enabled: true,
+            appId: qqConfig.appId,
+            clientSecret: qqConfig.appSecret,
+          },
+          ...(hasWecom ? {
+            wecom: {
+              enabled: true,
+              botId: wecomConfig.botId,
+              secret: wecomConfig.secret,
+              dmPolicy: 'open',
+            },
+          } : {}),
+        },
+      } : hasWecom ? {
+        channels: {
+          wecom: {
+            enabled: true,
+            botId: wecomConfig.botId,
+            secret: wecomConfig.secret,
+          },
+        },
+      } : {}),
     };
 
     const nextContent = `${JSON.stringify(managedConfig, null, 2)}\n`;

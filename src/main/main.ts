@@ -671,6 +671,34 @@ const getOpenClawConfigSync = (): OpenClawConfigSync => {
     openClawConfigSync = new OpenClawConfigSync({
       engineManager: getOpenClawEngineManager(),
       getCoworkConfig: () => getCoworkStore().getConfig(),
+      getDingTalkConfig: () => {
+        try {
+          return getIMGatewayManager().getConfig().dingtalk;
+        } catch {
+          return null;
+        }
+      },
+      getFeishuConfig: () => {
+        try {
+          return getIMGatewayManager().getConfig().feishu;
+        } catch {
+          return null;
+        }
+      },
+      getQQConfig: () => {
+        try {
+          return getIMGatewayManager().getConfig().qq;
+        } catch {
+          return null;
+        }
+      },
+      getWecomConfig: () => {
+        try {
+          return getIMGatewayManager().getConfig().wecom;
+        } catch {
+          return null;
+        }
+      },
     });
   }
   return openClawConfigSync;
@@ -2207,6 +2235,22 @@ if (!gotTheLock) {
   ipcMain.handle('im:config:set', async (_event, config: Partial<IMGatewayConfig>) => {
     try {
       getIMGatewayManager().setConfig(config);
+      // Re-sync OpenClaw config so dingtalk-connector picks up new credentials
+      if (config.dingtalk) {
+        void syncOpenClawConfig({ reason: 'im-dingtalk-config-change', restartGatewayIfRunning: false });
+      }
+      // Re-sync OpenClaw config so feishu-openclaw-plugin picks up new credentials
+      if (config.feishu) {
+        void syncOpenClawConfig({ reason: 'im-feishu-config-change', restartGatewayIfRunning: false });
+      }
+      // Re-sync OpenClaw config so qqbot plugin picks up new credentials
+      if (config.qq) {
+        void syncOpenClawConfig({ reason: 'im-qq-config-change', restartGatewayIfRunning: false });
+      }
+      // Re-sync OpenClaw config so wecom-openclaw-plugin picks up new credentials
+      if (config.wecom) {
+        void syncOpenClawConfig({ reason: 'im-wecom-config-change', restartGatewayIfRunning: false });
+      }
       return { success: true };
     } catch (error) {
       return {
